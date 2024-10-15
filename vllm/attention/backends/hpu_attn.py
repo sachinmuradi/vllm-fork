@@ -221,6 +221,8 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                 value_cache=value_cache,
                 block_list=attn_metadata.block_list,
                 block_mapping=attn_metadata.block_mapping,
+                block_indices=block_indices,
+                block_offsets=block_offsets,
                 block_bias=attn_metadata.attn_bias,
                 scale=self.scale,
                 matmul_qk_op=self.matmul_qk,
