@@ -63,6 +63,8 @@ _PAD_BLOCK_ID = 0
 
 LORA_WARMUP_RANK = 8
 
+DEBUG_LOG = os.environ.get('DBG', 0) == "1"
+DEBUG_PROFILE = os.environ.get('PROF', 0)
 
 def subtuple(obj: object,
              typename: str,
@@ -958,6 +960,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     block_table = block_table[-sliding_window_blocks:]
                 block_tables.append(block_table)
 
+        if DEBUG_LOG:
+            print(f"prepare decode data, seq_len {seq_lens}")
+            print(f"prepare decode data, input_positions {input_positions}")
         input_tokens = torch.tensor(input_tokens,
                                     dtype=torch.long,
                                     device=self.device)
@@ -984,6 +989,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
         block_bucket_size = find_bucket(len(block_list),
                                         self.decode_block_bucket_cfg)
+        if DEBUG_LOG:
+            print(f"prepare decode data, original block_list {len(block_list)}")
+            print(f"prepare decode data, block_bucket_size {block_bucket_size}")
         block_list = pad_list(block_list, block_bucket_size, _PAD_SLOT_ID)
         block_mapping = pad_list(block_mapping, block_bucket_size, 0)
         block_usage = pad_list(block_usage, block_bucket_size, 0)
@@ -1084,6 +1092,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             slot_mapping,
             lora_ids,
         ) = self._prepare_prompt(prefill_reqs)
+        if DEBUG_LOG:
+            print("execute_model start===============================")
+            print(f"prompt seq length list {seq_lens}")
         (
             decode_input_tokens,
             decode_input_positions,
@@ -1858,6 +1869,16 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         num_steps: int = 1,
         warmup_mode=False,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        if DEBUG_LOG:
+            torch.hpu.synchronize()
+            exec_s0 = htorch.hpu.Event(enable_timing=True)
+            exec_s1 = htorch.hpu.Event(enable_timing=True)
+            exec_s2 = htorch.hpu.Event(enable_timing=True)
+            exec_s3 = htorch.hpu.Event(enable_timing=True)
+            exec_s4 = htorch.hpu.Event(enable_timing=True)
+            exec_s5 = htorch.hpu.Event(enable_timing=True)
+            exec_s6 = htorch.hpu.Event(enable_timing=True)
+            exec_s0.record()
         if num_steps > 1:
             raise ValueError(
                 "num_steps > 1 is not supported in HPUModelRunner")
@@ -1904,6 +1925,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             execute_model_kwargs.update({"bypass_hpu_graphs": not use_graphs})
 
         htorch.core.mark_step()
+        if DEBUG_LOG:
+            htorch.core.mark_step()
+            exec_s2.record()
+            print(f"BEGIN EXEC: warmup{'T' if warmup_mode else 'F'}_model_{'prompt' if is_prompt else 'decode'}_bs{batch_size}_seq{seq_len}_graphs{'T' if use_graphs else 'F'}")
         if self.is_driver_worker:
             model_event_name = ("model_"
                                 f"{'prompt' if is_prompt else 'decode'}_"
@@ -1918,6 +1943,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 selected_token_indices=sampling_metadata.selected_token_indices
             )
 
+        if DEBUG_LOG:
+            htorch.core.mark_step()
+            exec_s3.record()
         if self.lora_config:
             LoraMask.setLoraMask(
                 lora_logits_mask.index_select(
@@ -1933,6 +1961,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             logits = self.model.compute_logits(hidden_states,
                                                sampling_metadata)
         htorch.core.mark_step()
+        if DEBUG_LOG:
+            exec_s4.record()
         # Only perform sampling in the driver worker.
         if not self.is_driver_worker:
             return []
@@ -1952,6 +1982,14 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             )
         output.outputs = output.outputs[:real_batch_size]
         htorch.core.mark_step()
+
+        if DEBUG_LOG:
+            exec_s5.record()
+            torch.hpu.synchronize()
+            print(f"Exec: time elapse {exec_s2.elapsed_time(exec_s3)} ms ")
+            print(f"Compute the logits: time elapse {exec_s3.elapsed_time(exec_s4)} ms ")
+            print(f"Next Token Sampling: time elapse {exec_s4.elapsed_time(exec_s5)} ms ")
+            print("execute_model finish===============================")
 
         if self.is_driver_worker and self.profiler.enabled:
             # Stop recording 'execute_model' event
