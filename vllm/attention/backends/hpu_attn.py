@@ -176,12 +176,16 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
-            key_cache = self.k_cache(key, key_cache, block_indices,
-                                     block_offsets)
             value_cache = self.v_cache(value, value_cache, block_indices,
                                        block_offsets)
 
         if attn_metadata.is_prompt:
+            if kv_cache is not None:
+                key_cache = self.k_cache(key, key_cache, block_indices,
+                                        block_offsets)
+                # transpose the key_cache to match the CustomPA kernel.
+                if ops.is_custom_pa_enabled():
+                    key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
             # Prompt run.
             if not self.prefill_usefusedsdpa:
                 # TODO: move this outside of model
@@ -214,6 +218,15 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             )
             output = out.reshape(batch_size, seq_len, hidden_size)
         else:
+            if kv_cache is not None:
+                # transpose the key_cache to update the key.
+                # note that this can be avoid once the kernel can handle the key cache update.
+                if ops.is_custom_pa_enabled():
+                    key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
+                key_cache = self.k_cache(key, key_cache, block_indices,
+                                        block_offsets)
+                if ops.is_custom_pa_enabled():
+                    key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
             # Decoding run.
             output = HPUPagedAttention.forward_decode(
                 query=query,
