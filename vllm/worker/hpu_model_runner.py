@@ -11,6 +11,7 @@ import itertools
 import math
 import operator
 import os
+import sys
 import time
 from array import array
 from enum import IntEnum
@@ -63,6 +64,7 @@ _PAD_BLOCK_ID = 0
 
 LORA_WARMUP_RANK = 8
 
+DEBUG_PROFILE = os.environ.get('PROF', 0)
 
 def subtuple(obj: object,
              typename: str,
@@ -218,8 +220,7 @@ def align_workers(value, op):
     return value_t.item()
 
 
-def setup_profiler():
-    schedule = torch.profiler.schedule(wait=0, warmup=2, active=1, repeat=1)
+def pt_profiler(schedule):
     DEVICE = 'hpu'
     activities = [torch.profiler.ProfilerActivity.CPU]
     activities.extend([torch.profiler.ProfilerActivity.HPU] if DEVICE ==
@@ -237,6 +238,38 @@ def setup_profiler():
         with_stack=True)
     return profiler
 
+
+def hltv_profiler(schedule):
+    pt_tools_path = os.environ.get('PT_TOOLS_PATH', '/home/xichen/qnpu/ptdev/src/pytorch-integration/topologies/')
+    assert pt_tools_path is not None, "Need to specify PT_TOOLS_PATH to use hltv profiling method"
+    sys.path.append(pt_tools_path)
+    from tools import SynapseProfilerApi, TraceType
+    api = SynapseProfilerApi()
+    class SynapseProfiler:
+        def check(self):
+            if schedule(self.cur_step) == torch.profiler.ProfilerAction.RECORD_AND_SAVE:
+                api.profiler_start(TraceType.TraceAll, 0)
+        def start(self):
+            self.cur_step = 0
+            self.check()
+        def step(self):
+            self.cur_step = self.cur_step + 1
+            self.check()
+        def stop(self):
+            api.profiler_stop(TraceType.TraceAll, 0)
+            api.profiler_get_trace_json(TraceType.TraceAll, 0)
+    return SynapseProfiler()
+
+
+def setup_profiler():
+    prof_wait = 0
+    prof_warmup = 0
+    prof_active = 1
+    prof_type = os.environ.get('VLLM_PT_PROFILE_METHOD', 'hltv')
+    assert prof_type in ['pt', 'hltv']
+    method = pt_profiler if prof_type == 'pt' else hltv_profiler
+    schedule = torch.profiler.schedule(wait=prof_wait, warmup=prof_warmup, active=prof_active, repeat=1)
+    return method(schedule)
 
 def pad_list(list, k, v):
     target_len = round_up(len(list), k)
@@ -1904,6 +1937,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             execute_model_kwargs.update({"bypass_hpu_graphs": not use_graphs})
 
         htorch.core.mark_step()
+        if (DEBUG_PROFILE == "1" and is_prompt) or (DEBUG_PROFILE == "2" and not is_prompt):
+            enable_profile = True
+        else:
+            enable_profile = False
+        if enable_profile and not warmup_mode:
+            profiler = setup_profiler()
+            profiler.start()
         if self.is_driver_worker:
             model_event_name = ("model_"
                                 f"{'prompt' if is_prompt else 'decode'}_"
@@ -1965,6 +2005,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 real_batch_size=real_batch_size,
                 is_prompt=is_prompt)
             self.profiler.record_counter(self.event_start, counters)
+
+        if enable_profile and not warmup_mode:
+            torch.hpu.synchronize()
+            profiler.step()
+            profiler.stop()
+            gc.collect()
+
         return [output]
 
     def shutdown_inc(self):

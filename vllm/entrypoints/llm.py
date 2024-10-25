@@ -33,6 +33,8 @@ from vllm.utils import Counter, deprecate_kwargs, is_list_of
 
 logger = init_logger(__name__)
 
+import os
+DEBUG_PROFILE = os.environ.get('PROF', 0)
 
 class LLM:
     """An LLM for generating texts from given prompts and sampling parameters.
@@ -878,8 +880,12 @@ class LLM:
         outputs: List[Union[RequestOutput, EmbeddingRequestOutput]] = []
         total_in_toks = 0
         total_out_toks = 0
+        iter = 0
         while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
+            iter += 1
+            if (DEBUG_PROFILE == "1" or DEBUG_PROFILE == "2") and iter == 3:
+                break
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
