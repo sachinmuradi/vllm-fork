@@ -228,6 +228,8 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                 if ops.is_custom_pa_enabled():
                     key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
             # Decoding run.
+            if ops.is_custom_pa_enabled():
+                block_indices = attn_metadata.block_indices_tpc
             output = HPUPagedAttention.forward_decode(
                 query=query,
                 key_cache=key_cache,

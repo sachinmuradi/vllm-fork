@@ -287,6 +287,18 @@ def precompute_indices_and_offsets(block_size, slot_mapping, is_prompt):
         offsets = torch.fmod(slot_mapping, block_size)
     return indices, offsets
 
+def calculate_block_indices(num_sequences, block_mapping):
+    num_blocks_curr_batch = len(block_mapping)
+    block_indices_new = [0] * (num_sequences + 1)
+
+    for block_idx in range(num_blocks_curr_batch):
+        seq_id = block_mapping[block_idx]
+        block_indices_new[seq_id + 1] += 1
+
+    for seq_id in range(1, num_sequences + 1):
+        block_indices_new[seq_id] += block_indices_new[seq_id - 1]
+
+    return block_indices_new
 
 class HpuModelAdapter():
 
@@ -906,6 +918,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             block_usage=None,
             block_indices=block_indices,
             block_offsets=block_offsets,
+            block_indices_tpc=None,
             attn_bias=None,
             seq_lens_tensor=seq_lens_tensor,
             num_prefills=real_num_seqs,
@@ -1018,9 +1031,20 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         block_bucket_size = find_bucket(len(block_list),
                                         self.decode_block_bucket_cfg)
         block_list = pad_list(block_list, block_bucket_size, _PAD_SLOT_ID)
+
+        # Block indices needed for custom PagedAttn is different than block_indices calculated using precompute_indices_and_offsets
+        # Calculation of block_indices needed for custom PagedAttn is calculated using block_mapping
+        # We calculate it before block_mapping is padded with block bucket size
+        # TODO: We could also calculate using slot_mapping
+        block_indices_tpc = calculate_block_indices(len(slot_mapping), block_mapping)
+        block_indices_tpc = torch.tensor(block_indices_tpc,
+                                  dtype=torch.int,
+                                  device=self.device)
+      
         block_mapping = pad_list(block_mapping, block_bucket_size, 0)
         block_usage = pad_list(block_usage, block_bucket_size, 0)
 
+        
         block_list = torch.tensor(block_list,
                                   dtype=torch.int,
                                   device=self.device)
@@ -1037,12 +1061,15 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
 
         block_indices, block_offsets = precompute_indices_and_offsets(
             self.block_size, slot_mapping, False)
+
+
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=False,
             block_list=block_list,
             block_mapping=block_mapping,
             block_usage=block_usage,
             block_indices=block_indices,
+            block_indices_tpc=block_indices_tpc,
             block_offsets=block_offsets,
             attn_bias=None,
             seq_lens_tensor=None,
@@ -1255,7 +1282,7 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
         attention_metadata = subtuple(metadata, 'TrimmedAttentionMetadata', [
             'attn_bias', 'seq_lens_tensor', 'block_list', 'block_mapping',
             'block_usage', 'slot_mapping', 'is_prompt', 'block_indices',
-            'block_offsets'
+            'block_offsets', 'block_indices_tpc'
         ])
         return attention_metadata
 
