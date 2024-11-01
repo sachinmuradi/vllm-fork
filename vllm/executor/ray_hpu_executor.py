@@ -78,14 +78,17 @@ class RayHPUExecutor(DistributedGPUExecutor):
                 ray.kill(worker)
             self.forward_dag = None
 
+    def finish_measurements(self):
+        self._run_workers("finish_measurements")
+
     def _get_worker_module_and_class(
         self
     ) -> Tuple[str, str, Optional[Callable[[],
                                            Type[WorkerBase]]]]:  # noqa: F821
         worker_class_fn = None
         if self.scheduler_config.is_multi_step:
-            raise NotImplementedError(
-                "Multi-step execution is not implemented for HPU")
+            worker_module_name = "vllm.worker.multi_step_hpu_worker"
+            worker_class_name = "MultiStepHPUWorker"
         elif self.speculative_config:
             raise NotImplementedError(
                 "Speculative decoding is not implemented for HPU")
