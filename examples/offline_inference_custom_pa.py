@@ -8,15 +8,15 @@
 from vllm import LLM, SamplingParams
 
 import os
-os.environ["VLLM_PROMPT_BS_BUCKET_MIN"] = "4"
+os.environ["VLLM_PROMPT_BS_BUCKET_MIN"] = "128"
 os.environ["VLLM_PROMPT_BS_BUCKET_STEP"] = "1"
-os.environ["VLLM_PROMPT_BS_BUCKET_MAX"] = "4"
-os.environ["VLLM_PROMPT_SEQ_BUCKET_MIN"] = "384"
-os.environ["VLLM_PROMPT_SEQ_BUCKET_MAX"] = "384"
+os.environ["VLLM_PROMPT_BS_BUCKET_MAX"] = "128"
+os.environ["VLLM_PROMPT_SEQ_BUCKET_MIN"] = "256"
+os.environ["VLLM_PROMPT_SEQ_BUCKET_MAX"] = "256"
 os.environ["VLLM_DECODE_BS_BUCKET_MIN"] = "128"
 os.environ["VLLM_DECODE_BS_BUCKET_MAX"] = "128"
-os.environ["VLLM_DECODE_BLOCK_BUCKET_MIN"] = "128"
-os.environ["VLLM_DECODE_BLOCK_BUCKET_MAX"] = "128"
+os.environ["VLLM_DECODE_BLOCK_BUCKET_MIN"] = "256"
+os.environ["VLLM_DECODE_BLOCK_BUCKET_MAX"] = "256"
 os.environ["VLLM_PREFILL_USE_FUSESDAPA"] = "1"
 # Sample prompts.
 prompt_ids = [
@@ -26,7 +26,15 @@ prompt_ids = [
     [128000, 19930, 264, 1160, 315, 78888, 369, 52104, 8158, 369, 420, 10960, 551, 2485, 1129, 82, 2642, 20306, 21100, 4970, 31607, 14],
 ]
 
-prompt_ids = (prompt_ids * (128 // len(prompt_ids) + 1))[:128]
+static_ids = []
+input_seq_len = 127
+batch_size = 128
+for seq in prompt_ids:
+    static_seq = (seq * (input_seq_len // len(seq) + 1))[:input_seq_len]
+    static_ids.append(static_seq)
+
+static_ids = (static_ids * (batch_size // len(static_ids) + 1))[:batch_size]
+
 # Create a sampling params object.
 sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
 
@@ -42,7 +50,7 @@ llm = LLM(model="/mnt/weka/data/pytorch/llama3/Meta-Llama-3-8B/",
           gpu_memory_utilization=0.85)
 # Generate texts from the prompts. The output is a list of RequestOutput objects
 # that contain the prompt, generated text, and other information.
-outputs = llm.generate(prompt_token_ids=prompt_ids, sampling_params=sampling_params)
+outputs = llm.generate(prompt_token_ids=static_ids, sampling_params=sampling_params)
 # Print the outputs.
 for output in outputs:
     prompt = output.prompt
