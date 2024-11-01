@@ -184,6 +184,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                 key_cache = self.k_cache(key, key_cache, block_indices,
                                         block_offsets)
                 # transpose the key_cache to match the CustomPA kernel.
+
                 if ops.is_custom_pa_enabled():
                     key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
             # Prompt run.
@@ -219,19 +220,16 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
             output = out.reshape(batch_size, seq_len, hidden_size)
         else:
             if kv_cache is not None:
-                # transpose the key_cache to update the key.
-                # note that this can be avoid once the kernel can handle the key cache update.
-                if ops.is_custom_pa_enabled():
-                    key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
-                key_cache = self.k_cache(key, key_cache, block_indices,
-                                        block_offsets)
-                if ops.is_custom_pa_enabled():
-                    key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
+                if not ops.is_custom_pa_enabled():
+                    key_cache = self.k_cache(key, key_cache, block_indices, block_offsets)
+
             # Decoding run.
             if ops.is_custom_pa_enabled():
                 block_indices = attn_metadata.block_indices_tpc
+
             output = HPUPagedAttention.forward_decode(
                 query=query,
+                key = key,
                 key_cache=key_cache,
                 value_cache=value_cache,
                 block_list=attn_metadata.block_list,

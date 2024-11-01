@@ -1985,6 +1985,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 selected_token_indices=sampling_metadata.selected_token_indices
             )
 
+        #print(f"DONE model.forward = {hidden_states.size()}")
+        #print(hidden_states)
+
         if self.lora_config:
             LoraMask.setLoraMask(
                 lora_logits_mask.index_select(
@@ -2000,6 +2003,9 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             logits = self.model.compute_logits(hidden_states,
                                                sampling_metadata)
         htorch.core.mark_step()
+        #print(f"DONE compute_logits = {logits.numel()}")
+        #print(logits)
+
         # Only perform sampling in the driver worker.
         if not self.is_driver_worker:
             return []
@@ -2008,6 +2014,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
             model_input.async_callback()
 
         # Sample the next token.
+        #print(f"CALLING model.sample")
         with self.profiler.record_event(
                 'internal', ('sample_'
                              f'{"prompt" if is_prompt else "decode"}_'
@@ -2017,6 +2024,7 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                 logits=logits,
                 sampling_metadata=sampling_metadata,
             )
+        #print(f"DONE model.sample")            
         output.outputs = output.outputs[:real_batch_size]
         htorch.core.mark_step()
 
