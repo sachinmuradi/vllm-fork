@@ -35,6 +35,9 @@ from vllm.transformers_utils.tokenizer_group import TokenizerGroup
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Counter, deprecate_args, deprecate_kwargs, is_list_of
 
+import os
+DEBUG_PROFILE = os.environ.get('PROF', 0)
+
 logger = init_logger(__name__)
 
 
@@ -964,8 +967,12 @@ class LLM:
         outputs: List[Union[RequestOutput, EmbeddingRequestOutput]] = []
         total_in_toks = 0
         total_out_toks = 0
+        iter = 0
         while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
+            iter += 1
+            if (DEBUG_PROFILE == "1" or DEBUG_PROFILE == "2") and iter == 18:
+                break
             for output in step_outputs:
                 if output.finished:
                     outputs.append(output)
