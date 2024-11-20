@@ -11,6 +11,7 @@ import itertools
 import math
 import operator
 import os
+import sys
 import time
 from array import array
 from dataclasses import dataclass, field
@@ -67,6 +68,8 @@ _PAD_BLOCK_ID = 0
 
 LORA_WARMUP_RANK = 8
 
+DEBUG_LOG = os.environ.get('DBG', 0) == "1"
+DEBUG_PROFILE = os.environ.get('PROF', 0)
 
 class Singleton(type):
     _instances: Dict[type, object] = {}
@@ -241,7 +244,7 @@ def align_workers(value, op):
     return value_t.item()
 
 
-def setup_profiler():
+def pt_profiler():
     schedule = torch.profiler.schedule(wait=0, warmup=2, active=1, repeat=1)
     DEVICE = 'hpu'
     activities = [torch.profiler.ProfilerActivity.CPU]
@@ -259,6 +262,37 @@ def setup_profiler():
         record_shapes=False,
         with_stack=True)
     return profiler
+
+
+def hltv_profiler(schedule):
+    pt_tools_path = os.environ.get('PT_TOOLS_PATH', '/home/xichen/qnpu/ptdev/src/pytorch-integration/topologies/')
+    assert pt_tools_path is not None, "Need to specify PT_TOOLS_PATH to use hltv profiling method"
+    sys.path.append(pt_tools_path)
+    from tools import SynapseProfilerApi, TraceType
+    api = SynapseProfilerApi()
+    class SynapseProfiler:
+        def check(self):
+            if schedule(self.cur_step) == torch.profiler.ProfilerAction.RECORD_AND_SAVE:
+                api.profiler_start(TraceType.TraceAll, 0)
+        def start(self):
+            self.cur_step = 0
+            self.check()
+        def step(self):
+            self.cur_step = self.cur_step + 1
+            self.check()
+        def stop(self):
+            api.profiler_stop(TraceType.TraceAll, 0)
+            api.profiler_get_trace_json(TraceType.TraceAll, 0)
+    return SynapseProfiler()
+def setup_profiler():
+    prof_wait = 0
+    prof_warmup = 0
+    prof_active = 1
+    prof_type = os.environ.get('VLLM_PT_PROFILE_METHOD', 'hltv')
+    assert prof_type in ['pt', 'hltv']
+    method = pt_profiler if prof_type == 'pt' else hltv_profiler
+    schedule = torch.profiler.schedule(wait=prof_wait, warmup=prof_warmup, active=prof_active, repeat=1)
+    return method(schedule)
 
 
 def pad_list(list, k, v):
@@ -1075,6 +1109,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
                     block_table = block_table[-sliding_window_blocks:]
                 block_tables.append(block_table)
 
+        if DEBUG_LOG:
+            print(f"prepare decode data, seq_len {seq_lens}")
+            print(f"prepare decode data, input_positions {input_positions}")
         if output is None:
             input_tokens = torch.tensor(input_tokens,
                                         dtype=torch.long,
@@ -1101,6 +1138,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             block_bucket_size = find_bucket(
                 max_blocks,
                 self.bucketing_global_state.decode_block_bucket_cfg)
+            if DEBUG_LOG:
+                print(f"prepare decode data, original block_list {len(block_list)}")
+                print(f"prepare decode data, block_bucket_size {max_blocks}")
             block_bucket_size = min(block_bucket_size,
                                     self.cache_config.num_gpu_blocks)
 
@@ -1154,6 +1194,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             block_bucket_size = find_bucket(
                 len(block_list),
                 self.bucketing_global_state.decode_block_bucket_cfg)
+            if DEBUG_LOG:
+                print(f"prepare decode data, original block_list {len(block_list)}")
+                print(f"prepare decode data, block_bucket_size {block_bucket_size}")
             block_mapping = pad_list(block_mapping, block_bucket_size, -1)
             block_usage = pad_list(block_usage, block_bucket_size, 1)
             block_scales = pad_list(block_scales, block_bucket_size, 0.0)
@@ -1266,6 +1309,9 @@ class HPUModelRunnerBase(ModelRunnerBase[TModelInputForHPU]):
             slot_mapping,
             lora_ids,
         ) = self._prepare_prompt(prefill_reqs)
+        if DEBUG_LOG:
+            print("execute_model start===============================")
+            print(f"prompt seq length list {seq_lens}")
         (
             decode_input_tokens,
             decode_input_positions,
@@ -2044,6 +2090,16 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
         num_steps: int = 1,
         warmup_mode=False,
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
+        if DEBUG_LOG:
+            torch.hpu.synchronize()
+            exec_s0 = htorch.hpu.Event(enable_timing=True)
+            exec_s1 = htorch.hpu.Event(enable_timing=True)
+            exec_s2 = htorch.hpu.Event(enable_timing=True)
+            exec_s3 = htorch.hpu.Event(enable_timing=True)
+            exec_s4 = htorch.hpu.Event(enable_timing=True)
+            exec_s5 = htorch.hpu.Event(enable_timing=True)
+            exec_s6 = htorch.hpu.Event(enable_timing=True)
+            exec_s0.record()
         if not model_input.is_first_multi_step:
             if not model_input.is_last_step:
                 # not first or last multi-step
@@ -2096,6 +2152,17 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     {"bypass_hpu_graphs": not use_graphs})
 
             htorch.core.mark_step()
+            if (DEBUG_PROFILE == "1" and is_prompt) or (DEBUG_PROFILE == "2" and not is_prompt):
+                enable_profile = True
+            else:
+                enable_profile = False
+            if enable_profile and not warmup_mode:
+                profiler = setup_profiler()
+                profiler.start()
+            if DEBUG_LOG:
+                htorch.core.mark_step()
+                exec_s2.record()
+                print(f"BEGIN EXEC: warmup{'T' if warmup_mode else 'F'}_model_{'prompt' if is_prompt else 'decode'}_bs{batch_size}_seq{seq_len}_graphs{'T' if use_graphs else 'F'}")
             if self.is_driver_worker:
                 model_event_name = ("model_"
                                     f"{'prompt' if is_prompt else 'decode'}_"
@@ -2116,6 +2183,10 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         selected_token_indices=sampling_metadata.
                         selected_token_indices)
 
+                if DEBUG_LOG:
+                    htorch.core.mark_step()
+                    exec_s3.record()
+
                 if self.lora_config:
                     LoraMask.setLoraMask(
                         lora_logits_mask.index_select(
@@ -2133,6 +2204,8 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     logits = self.model.compute_logits(hidden_states,
                                                        sampling_metadata)
                 htorch.core.mark_step()
+                if DEBUG_LOG:
+                    exec_s4.record()
                 # Only perform sampling in the driver worker.
                 if not self.is_driver_worker:
                     return []
@@ -2186,6 +2259,14 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                         self.trim_attn_metadata(result.attn_metadata)
                     })
 
+            if DEBUG_LOG:
+                exec_s5.record()
+                torch.hpu.synchronize()
+                print(f"Exec: time elapse {exec_s2.elapsed_time(exec_s3)} ms ")
+                print(f"Compute the logits: time elapse {exec_s3.elapsed_time(exec_s4)} ms ")
+                print(f"Next Token Sampling: time elapse {exec_s4.elapsed_time(exec_s5)} ms ")
+                print("execute_model finish===============================")
+
             if self.is_driver_worker and self.profiler.enabled:
                 # Stop recording 'execute_model' event
                 self.profiler.end()
@@ -2198,6 +2279,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     real_batch_size=real_batch_size,
                     is_prompt=is_prompt)
                 self.profiler.record_counter(self.event_start, counters)
+
+            if enable_profile and not warmup_mode:
+                torch.hpu.synchronize()
+                profiler.step()
+                profiler.stop()
+                gc.collect()
+
             if num_steps == 1:
                 return [output]
             else:
