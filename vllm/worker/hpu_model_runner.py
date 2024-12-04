@@ -242,8 +242,8 @@ def align_workers(value, op):
     torch.distributed.all_reduce(value_t, op=op, group=group)
     return value_t.item()
 
-
-def pt_profiler(schedule):
+def setup_profiler():
+    schedule = torch.profiler.schedule(wait=0, warmup=0, active=1, repeat=0)
     DEVICE = 'hpu'
     activities = [torch.profiler.ProfilerActivity.CPU]
     activities.extend([torch.profiler.ProfilerActivity.HPU] if DEVICE ==
@@ -256,7 +256,25 @@ def pt_profiler(schedule):
         activities=activities,
         #debug_activities=debug_activities,
         on_trace_ready=torch.profiler.tensorboard_trace_handler('.',
-                                                                use_gzip=True),
+                                                                use_gzip=False),
+        record_shapes=False,
+        with_stack=False)
+    return profiler
+
+def pt_profiler(schedule):
+    DEVICE = 'hpu'
+    activities = [torch.profiler.ProfilerActivity.HPU]
+    activities.extend([torch.profiler.ProfilerActivity.HPU] if DEVICE ==
+                      'hpu' else [])
+    #from habana_frameworks.torch.activity_profiler import DebugActivity
+    #debug_activities=[DebugActivity.BRIDGE_FUNCTION_CALLS]
+
+    profiler = torch.profiler.profile(
+        schedule=schedule,
+        activities=activities,
+        #debug_activities=debug_activities,
+        on_trace_ready=torch.profiler.tensorboard_trace_handler('.',
+                                                                use_gzip=False),
         record_shapes=False,
         with_stack=True)
     return profiler
@@ -284,14 +302,14 @@ def hltv_profiler(schedule):
     return SynapseProfiler()
 
 
-def setup_profiler():
+def setup_profiler_old():
     prof_wait = 0
     prof_warmup = 0
     prof_active = 1
-    prof_type = os.environ.get('VLLM_PT_PROFILE_METHOD', 'hltv')
+    prof_type = os.environ.get('VLLM_PT_PROFILE_METHOD', 'pt')
     assert prof_type in ['pt', 'hltv']
     method = pt_profiler if prof_type == 'pt' else hltv_profiler
-    schedule = torch.profiler.schedule(wait=prof_wait, warmup=prof_warmup, active=prof_active, repeat=1)
+    schedule = torch.profiler.schedule(wait=prof_wait, warmup=prof_warmup, active=prof_active, repeat=0)
     return method(schedule)
 
 def pad_list(list, k, v):

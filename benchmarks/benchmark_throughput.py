@@ -133,34 +133,74 @@ def run_vllm(
         sampling_params.append(
             SamplingParams(
                 n=n,
-                temperature=1.0,
-                top_p=1.0,
+                temperature=0.0,
                 ignore_eos=True,
                 max_tokens=output_len,
             ))
 
     use_beam_search = False
 
-    if not use_beam_search:
-        start = time.perf_counter()
-        llm.generate(prompts, sampling_params, use_tqdm=True)
-        end = time.perf_counter()
-    else:
-        prompts = [prompt for prompt, _, _ in requests]
-        # output_len should be the same for all requests.
-        output_len = requests[0][2]
-        for prompt, input_len, _output_len in requests:
-            assert _output_len == output_len
-        start = time.perf_counter()
-        llm.beam_search(
-            prompts,
-            BeamSearchParams(
-                beam_width=n,
-                max_tokens=output_len,
-                ignore_eos=True,
-            ))
-        end = time.perf_counter()
-    return end - start
+    from vllm.worker.hpu_model_runner import setup_profiler
+    profiler = setup_profiler()
+    # profiler.start()
+    profiler_step = 3
+
+    for i in range(4):
+        if not use_beam_search:
+            if i == profiler_step:
+                prompts: List[str] = []
+                sampling_params: List[SamplingParams] = []
+                for prompt, _, output_len in requests:
+                    prompts.append(prompt)
+                    sampling_params.append(
+                        SamplingParams(
+                            n=n,
+                            temperature=0.0,
+                            ignore_eos=True,
+                            max_tokens=4,
+                        ))
+                profiler.start()
+            start = time.perf_counter()
+            llm.generate(prompts, sampling_params, use_tqdm=True)
+            end = time.perf_counter()
+            if i == profiler_step:
+                profiler.step()
+                profiler.stop()
+        else:
+            prompts = [prompt for prompt, _, _ in requests]
+            # output_len should be the same for all requests.
+            output_len = requests[0][2]
+            for prompt, input_len, _output_len in requests:
+                assert _output_len == output_len
+            start = time.perf_counter()
+            llm.beam_search(
+                prompts,
+                BeamSearchParams(
+                    beam_width=n,
+                    max_tokens=output_len,
+                    ignore_eos=True,
+                ))
+            end = time.perf_counter()
+        elapsed_time =  end - start
+        total_num_tokens = sum(prompt_len + output_len
+                            for _, prompt_len, output_len in requests)
+        in_num_tokens = sum(prompt_len
+                            for _, prompt_len, output_len in requests)
+        out_num_tokens = sum(output_len
+                            for _, prompt_len, output_len in requests)
+
+        #llm.llm_engine.model_executor.driver_worker.print_perf()
+        #llm.llm_engine.model_executor.driver_worker.reset_perf()
+        #llm.llm_engine.model_executor.driver_worker.model_runner.print_perf()
+        #llm.llm_engine.model_executor.driver_worker.model_runner.reset_perf()
+
+        print("====== Warmup ======")
+        print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, ")
+        print(f"duration: {elapsed_time:.2f} secs")
+        print(f"Total Throughput: {total_num_tokens / elapsed_time:.2f} tokens/s")
+        print(f"Input Throughput: {in_num_tokens / elapsed_time:.2f} tokens/s")
+        print(f"Output Throughput: {out_num_tokens / elapsed_time:.2f} tokens/s")
+    return elapsed_time
 
 
 async def run_vllm_async(
