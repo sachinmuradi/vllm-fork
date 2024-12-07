@@ -906,6 +906,10 @@ class LLM:
 
         if use_tqdm:
             pbar.close()
+        #for output in outputs:
+        #    if(output.request_id == '1'):
+        #        print(f"in promt : {output.prompt_token_ids}")
+        #        print(f"out prompt : {output.outputs}")
         # Sort the outputs by request ID.
         # This is necessary because some requests may be finished earlier than
         # its previous requests.
