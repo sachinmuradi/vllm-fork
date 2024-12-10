@@ -197,7 +197,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         if attn_metadata.is_prompt:
             if kv_cache is not None:
                 key_cache = self.k_cache(key, key_cache, block_indices,
-                                         block_offsets)
+                                         block_offsets, ops.is_custom_pa_store_key())
 
             # Prompt run.
             query_shape = (batch_size, seq_len, self.num_heads, self.head_size)
@@ -252,7 +252,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                 if ops.is_custom_pa_store_key():
                     key_cache = ops.custom_store_key(key_cache, key, block_indices, block_offsets)
                 else:
-                    key_cache = self.k_cache(key, key_cache, block_indices, block_offsets)
+                    key_cache = self.k_cache(key, key_cache, block_indices, block_offsets, ops.is_custom_pa_store_key())
 
             # Decoding run.
             if ops.is_custom_pa_enabled():
