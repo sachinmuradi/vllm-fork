@@ -166,6 +166,8 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         Returns:
             shape = [num_tokens, num_heads * head_size]
         """
+        if (ops.is_custom_pa_enabled() or ops.is_custom_pa_store_key()) and attn_metadata.is_contiguous_pa:
+            raise NotImplementedError("Contiguous PA is not implemented for Custom kernels")
         if attn_type != AttentionType.DECODER:
             raise NotImplementedError("Encoder self-attention and "
                                       "encoder/decoder cross-attention "
@@ -195,7 +197,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         if attn_metadata.is_prompt:
             if kv_cache is not None:
                 key_cache = self.k_cache(key, key_cache, block_indices,
-                                         block_offsets, ops.is_custom_pa_store_key())
+                                         block_offsets)
 
             # Prompt run.
             query_shape = (batch_size, seq_len, self.num_heads, self.head_size)
@@ -245,19 +247,16 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                     keys_fetch_func=self.k_cache.fetch_from_cache,
                     values_fetch_func=self.v_cache.fetch_from_cache)
             output = out.reshape(batch_size, seq_len, hidden_size)
-            # if kv_cache is not None:
-            #     if ops.is_custom_pa_enabled() and not attn_metadata.is_contiguous_pa:
-            #         key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
         else:
             if kv_cache is not None:
-                if not ops.is_custom_pa_enabled():
+                if ops.is_custom_pa_store_key():
+                    key_cache = ops.custom_store_key(key_cache, key, block_indices, block_offsets)
+                else:
                     key_cache = self.k_cache(key, key_cache, block_indices, block_offsets)
 
             # Decoding run.
-            if ops.is_custom_pa_enabled() and not attn_metadata.is_contiguous_pa:
+            if ops.is_custom_pa_enabled():
                 block_indices = attn_metadata.block_indices_tpc
-                if ops.is_custom_pa_store_key():
-                    key_cache = ops.custom_store_key(key_cache, key, block_indices, block_offsets)
 
             output = HPUPagedAttention.forward_decode(
                 query=query,
