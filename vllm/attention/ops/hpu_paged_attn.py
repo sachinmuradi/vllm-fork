@@ -33,7 +33,16 @@ class HPUPagedAttention:
         return [64, 80, 96, 112, 128, 256]
 
     @staticmethod
-    def get_kv_cache_shape(
+    def get_k_cache_shape(
+        num_blocks: int,
+        block_size: int,
+        num_kv_heads: int,
+        head_size: int,
+    ) -> Tuple[int, ...]:
+        return (num_blocks, head_size, num_kv_heads, block_size)
+
+    @staticmethod
+    def get_v_cache_shape(
         num_blocks: int,
         block_size: int,
         num_kv_heads: int,

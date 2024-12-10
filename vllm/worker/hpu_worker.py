@@ -433,7 +433,9 @@ class HPUCacheEngine(CacheEngine):
         device: str,
     ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         """Allocates KV cache on the specified device."""
-        kv_cache_shape = self.attn_backend.get_kv_cache_shape(
+        k_cache_shape = self.attn_backend.get_k_cache_shape(
+            num_blocks, self.block_size, self.num_kv_heads, self.head_size)
+        v_cache_shape = self.attn_backend.get_v_cache_shape(
             num_blocks, self.block_size, self.num_kv_heads, self.head_size)
         kv_cache: List[Tuple[torch.Tensor, torch.Tensor]] = []
         dtype = self.dtype
@@ -441,8 +443,8 @@ class HPUCacheEngine(CacheEngine):
           and self.dtype == torch.float8_e4m3fn:
             dtype = torch.uint8
         for _ in range(self.num_attention_layers):
-            key_cache = torch.zeros(kv_cache_shape, dtype=dtype, device=device)
-            value_cache = torch.zeros(kv_cache_shape,
+            key_cache = torch.zeros(k_cache_shape, dtype=dtype, device=device)
+            value_cache = torch.zeros(v_cache_shape,
                                       dtype=dtype,
                                       device=device)
             kv_layer = (key_cache, value_cache)

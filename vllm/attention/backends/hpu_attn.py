@@ -36,14 +36,24 @@ class HPUAttentionBackend(AttentionBackend):
         return CommonAttentionState
 
     @staticmethod
-    def get_kv_cache_shape(
+    def get_k_cache_shape(
         num_blocks: int,
         block_size: int,
         num_kv_heads: int,
         head_size: int,
     ) -> Tuple[int, ...]:
-        return HPUPagedAttention.get_kv_cache_shape(num_blocks, block_size,
-                                                    num_kv_heads, head_size)
+        return HPUPagedAttention.get_k_cache_shape(num_blocks, block_size,
+                                                   num_kv_heads, head_size)
+
+    @staticmethod
+    def get_v_cache_shape(
+        num_blocks: int,
+        block_size: int,
+        num_kv_heads: int,
+        head_size: int,
+    ) -> Tuple[int, ...]:
+        return HPUPagedAttention.get_v_cache_shape(num_blocks, block_size,
+                                                   num_kv_heads, head_size)
 
     @staticmethod
     def swap_blocks(
@@ -185,7 +195,7 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
         if attn_metadata.is_prompt:
             if kv_cache is not None:
                 key_cache = self.k_cache(key, key_cache, block_indices,
-                                        block_offsets)
+                                         block_offsets, ops.is_custom_pa_store_key())
 
             # Prompt run.
             query_shape = (batch_size, seq_len, self.num_heads, self.head_size)
@@ -235,9 +245,9 @@ class HPUAttentionImpl(AttentionImpl, torch.nn.Module):
                     keys_fetch_func=self.k_cache.fetch_from_cache,
                     values_fetch_func=self.v_cache.fetch_from_cache)
             output = out.reshape(batch_size, seq_len, hidden_size)
-            if kv_cache is not None:
-                if ops.is_custom_pa_enabled() and not attn_metadata.is_contiguous_pa:
-                    key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
+            # if kv_cache is not None:
+            #     if ops.is_custom_pa_enabled() and not attn_metadata.is_contiguous_pa:
+            #         key_cache = key_cache.permute(0, 3, 2, 1).contiguous()
         else:
             if kv_cache is not None:
                 if not ops.is_custom_pa_enabled():
