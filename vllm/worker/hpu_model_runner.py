@@ -2156,6 +2156,15 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     {"bypass_hpu_graphs": not use_graphs})
 
             htorch.core.mark_step()
+
+            if (DEBUG_PROFILE == "1" and is_prompt) or (DEBUG_PROFILE == "2" and not is_prompt):
+                enable_profile = True
+            else:
+                enable_profile = False
+            if enable_profile and not warmup_mode:
+                profiler = setup_profiler()
+                profiler.start()
+
             if self.is_driver_worker:
                 model_event_name = ("model_"
                                     f"{'prompt' if is_prompt else 'decode'}_"
@@ -2258,6 +2267,13 @@ class HPUModelRunner(HPUModelRunnerBase[ModelInputForHPUWithSamplingMetadata]):
                     real_batch_size=real_batch_size,
                     is_prompt=is_prompt)
                 self.profiler.record_counter(self.event_start, counters)
+
+            if enable_profile and not warmup_mode:
+                torch.hpu.synchronize()
+                profiler.step()
+                profiler.stop()
+                gc.collect()
+
             if num_steps == 1:
                 return [output]
             else:

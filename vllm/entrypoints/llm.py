@@ -884,7 +884,7 @@ class LLM:
         while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
             iter += 1
-            if (DEBUG_PROFILE == "1" or DEBUG_PROFILE == "2") and iter == 3:
+            if (DEBUG_PROFILE == "1" or DEBUG_PROFILE == "2") and iter == 18:
                 break
             for output in step_outputs:
                 if output.finished:
